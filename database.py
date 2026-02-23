@@ -20,10 +20,10 @@ def init_db():
             student_id INTEGER,
             is_priority INTEGER,
             is_late INTEGER,
+            weight_at_generation REAL, -- Храним вес, который был ДО генерации
             FOREIGN KEY(student_id) REFERENCES students(id)
         )
         """)
-
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS queue_metadata (
             key TEXT PRIMARY KEY,
@@ -55,12 +55,12 @@ def get_all_weights():
         cursor = conn.cursor()
         cursor.execute("SELECT name, weight FROM students ORDER BY weight DESC")
         return cursor.fetchall()
-    
-def get_student_by_id(student_id):
+
+def get_full_list():
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, weight, active FROM students WHERE id=?", (student_id,))
-        return cursor.fetchone()
+        cursor.execute("SELECT id, name, active FROM students")
+        return cursor.fetchall()
 
 def toggle_student_status(student_id, status):
     with sqlite3.connect(DB_NAME) as conn:
@@ -68,12 +68,6 @@ def toggle_student_status(student_id, status):
         cursor.execute("UPDATE students SET active=? WHERE id=?", (status, student_id))
         conn.commit()
 
-def get_full_list():
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, name, active FROM students")
-        return cursor.fetchall()
-    
 def enable_all_students():
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -86,8 +80,10 @@ def save_queue_to_db(queue_with_meta):
         cursor.execute("DELETE FROM current_queue")
         for pos, item in enumerate(queue_with_meta, start=1):
             cursor.execute(
-                "INSERT INTO current_queue (position, student_id, is_priority, is_late) VALUES (?, ?, ?, ?)",
-                (pos, item['id'], item['is_priority'], item['is_late'])
+                """INSERT INTO current_queue 
+                   (position, student_id, is_priority, is_late, weight_at_generation) 
+                   VALUES (?, ?, ?, ?, ?)""",
+                (pos, item['id'], item['is_priority'], item['is_late'], item['weight_before'])
             )
         conn.commit()
     update_queue_time()
@@ -95,8 +91,9 @@ def save_queue_to_db(queue_with_meta):
 def load_queue_from_db():
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
+         
         cursor.execute("""
-            SELECT q.position, q.student_id, s.name, q.is_priority, q.is_late, s.weight
+            SELECT q.position, q.student_id, s.name, q.is_priority, q.is_late, q.weight_at_generation
             FROM current_queue q
             JOIN students s ON q.student_id = s.id
             ORDER BY q.position
@@ -106,22 +103,21 @@ def load_queue_from_db():
 def swap_queue_items(pos1, pos2):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT student_id, is_priority, is_late FROM current_queue WHERE position=?", (pos1,))
+        cursor.execute("SELECT student_id, is_priority, is_late, weight_at_generation FROM current_queue WHERE position=?", (pos1,))
         s1 = cursor.fetchone()
-        cursor.execute("SELECT student_id, is_priority, is_late FROM current_queue WHERE position=?", (pos2,))
+        cursor.execute("SELECT student_id, is_priority, is_late, weight_at_generation FROM current_queue WHERE position=?", (pos2,))
         s2 = cursor.fetchone()
         
         if s1 and s2:
-            cursor.execute("UPDATE current_queue SET student_id=?, is_priority=?, is_late=? WHERE position=?", 
-                           (s2[0], s2[1], s2[2], pos1))
-            cursor.execute("UPDATE current_queue SET student_id=?, is_priority=?, is_late=? WHERE position=?", 
-                           (s1[0], s1[1], s1[2], pos2))
+         
+            cursor.execute("UPDATE current_queue SET student_id=?, is_priority=?, is_late=?, weight_at_generation=? WHERE position=?", 
+                           (s2[0], s2[1], s2[2], s2[3], pos1))
+            cursor.execute("UPDATE current_queue SET student_id=?, is_priority=?, is_late=?, weight_at_generation=? WHERE position=?", 
+                           (s1[0], s1[1], s1[2], s1[3], pos2))
             conn.commit()
-    
     update_queue_time()
 
 def update_queue_time():
-    """Сохраняет текущее время как время последнего обновления очереди"""
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -129,7 +125,6 @@ def update_queue_time():
         conn.commit()
 
 def get_queue_time():
-    """Возвращает время последнего обновления очереди"""
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT value FROM queue_metadata WHERE key='last_update'")

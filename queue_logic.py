@@ -6,6 +6,7 @@ from database import update_weight
 def calculate_new_weight(current_weight, position, total_n):
     if total_n <= 1:
         return current_weight
+    
     delta = (position - (total_n + 1) / 2) / total_n
     new_weight = current_weight * math.exp(K_FACTOR * delta)
     return max(0.1, min(new_weight, 10))
@@ -16,6 +17,7 @@ def weighted_permutation(students, priority_ids=None, late_ids=None):
     priority_students = [s for s in students if s[0] in priority_ids]
     late_students = [s for s in students if s[0] in late_ids]
     random_pool = [s for s in students if s[0] not in priority_ids and s[0] not in late_ids]
+    
     random_part = []
     pool = random_pool.copy()
     while pool:
