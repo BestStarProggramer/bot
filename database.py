@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime
 
 DB_NAME = "students.db"
 
@@ -20,6 +21,13 @@ def init_db():
             is_priority INTEGER,
             is_late INTEGER,
             FOREIGN KEY(student_id) REFERENCES students(id)
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS queue_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT
         )
         """)
         conn.commit()
@@ -45,7 +53,7 @@ def reset_all_weights():
 def get_all_weights():
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT name, weight FROM students WHERE active=1 ORDER BY weight DESC")
+        cursor.execute("SELECT name, weight FROM students ORDER BY weight DESC")
         return cursor.fetchall()
     
 def get_student_by_id(student_id):
@@ -82,6 +90,7 @@ def save_queue_to_db(queue_with_meta):
                 (pos, item['id'], item['is_priority'], item['is_late'])
             )
         conn.commit()
+    update_queue_time()
 
 def load_queue_from_db():
     with sqlite3.connect(DB_NAME) as conn:
@@ -108,3 +117,21 @@ def swap_queue_items(pos1, pos2):
             cursor.execute("UPDATE current_queue SET student_id=?, is_priority=?, is_late=? WHERE position=?", 
                            (s1[0], s1[1], s1[2], pos2))
             conn.commit()
+    
+    update_queue_time()
+
+def update_queue_time():
+    """Сохраняет текущее время как время последнего обновления очереди"""
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO queue_metadata (key, value) VALUES ('last_update', ?)", (now,))
+        conn.commit()
+
+def get_queue_time():
+    """Возвращает время последнего обновления очереди"""
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM queue_metadata WHERE key='last_update'")
+        result = cursor.fetchone()
+        return result[0] if result else "неизвестно"
