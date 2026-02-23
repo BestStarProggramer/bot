@@ -1,3 +1,8 @@
-TOKEN = "8053049876:AAGX1nsgT5_QLabf7YHDhgL2NyiV0fjdA_E"
-ADMINS = {1607498152, 5174581416}  
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+TOKEN = os.getenv("BOT_TOKEN")
+ADMINS = {1607498152, 5174581416}
 K_FACTOR = 1.0
