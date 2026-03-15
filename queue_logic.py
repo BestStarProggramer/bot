@@ -135,7 +135,7 @@ def swap_and_cascade(queue_id, pos1, pos2):
     s1 = pos_map[pos1]
     s2 = pos_map[pos2]
     # disallow swapping priority, late or added students
-    if s1[2] or s1[3] or (len(s1) >= 7 and s1[6]) or s2[2] or s2[3] or (len(s2) >= 7 and s2[6]):
+    if s1[2] or s1[3] or s2[2] or s2[3]:
         raise RuntimeError("Нельзя менять приоритетных/опоздавших/добавленных")
 
     # swap in the specified queue

@@ -6,8 +6,8 @@ load_dotenv()
 ADMINS = {1607498152, 5174581416}
 
 
-TOKEN = os.getenv("BOT_TOKEN")
-# TOKEN = os.getenv("DEV_TOKEN")
+# TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("DEV_TOKEN")
 
 K_FACTOR = float(os.getenv("K_FACTOR", "1.0"))
 RECENT_QUEUE_LIMIT = int(os.getenv("RECENT_QUEUE_LIMIT", "5"))  # для каскадных пересчётов
