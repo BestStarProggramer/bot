@@ -4,7 +4,7 @@ from config import TOKEN
 from handlers import router
 from database import init_db
 
-async def main():
+async def main() -> None:
     init_db()
     bot = Bot(token=TOKEN)
     dp = Dispatcher()

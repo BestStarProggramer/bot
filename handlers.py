@@ -1,5 +1,7 @@
 import logging
 import re
+import time
+from typing import Dict, List, Optional, Any, Set
 from aiogram import Router, F
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -21,14 +23,25 @@ from queue_logic import (
 logging.basicConfig(level=logging.INFO)
 router = Router()
 
-priority_list = []
-late_list = []
-user_selections = {}
+priority_list: List[int] = []
+late_list: List[int] = []
+user_selections: Dict[int, Dict[str, Any]] = {}
 
-def is_admin(user_id):
+SELECTION_TIMEOUT_SECONDS = 300
+
+def is_admin(user_id: int) -> bool:
     return user_id in ADMINS
 
-def format_queue_message(q):
+def cleanup_old_selections() -> None:
+    current_time = time.time()
+    expired_users = [
+        user_id for user_id, data in user_selections.items()
+        if data.get("timestamp", 0) + SELECTION_TIMEOUT_SECONDS < current_time
+    ]
+    for user_id in expired_users:
+        user_selections.pop(user_id, None)
+
+def format_queue_message(q: Dict[str, Any]) -> str:
     meta = q["meta"]
     items = q["items"]
     qid, subject, created_at, updated_at, change_log = meta
@@ -45,7 +58,7 @@ def format_queue_message(q):
         text += f"{pos}. {pref}{name} — {weight_display:.2f}\n"
     return text
 
-def get_keyboard(user_id, queue_id=None):
+def get_keyboard(user_id: int, queue_id: Optional[int] = None) -> InlineKeyboardMarkup:
     if is_admin(user_id):
         buttons = []
         buttons.append([InlineKeyboardButton(text="🎲 Сгенерировать", callback_data="admin_gen")])
@@ -67,9 +80,11 @@ def get_keyboard(user_id, queue_id=None):
         ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_selection_keyboard(user_id):
+def get_selection_keyboard(user_id: int) -> Optional[InlineKeyboardMarkup]:
+    cleanup_old_selections()
     data = user_selections.get(user_id)
-    if not data: return None
+    if not data:
+        return None
     action = data["action"]
     temp_selected = data["selected"]
 
@@ -95,7 +110,8 @@ def get_selection_keyboard(user_id):
             if len(row) == 2:
                 buttons.append(row)
                 row = []
-        if row: buttons.append(row)
+        if row:
+            buttons.append(row)
         confirm_text = "🚀 ПОМЕНЯТЬ" if len(temp_selected) == 2 else "Выбери двоих"
         buttons.append([InlineKeyboardButton(text=confirm_text, callback_data="confirm_swap")])
         buttons.append([InlineKeyboardButton(text="🚫 Отмена", callback_data="cancel_selection")])
@@ -123,13 +139,15 @@ def get_selection_keyboard(user_id):
             q = get_queue(qid)
             present_ids = {itm[1] for itm in q["items"]}
             for s_id, name, active in students:
-                if s_id in present_ids: continue
+                if s_id in present_ids:
+                    continue
                 check = "✅ " if s_id in temp_selected else ""
                 row.append(InlineKeyboardButton(text=f"{check}{name}", callback_data=f"admin_add_toggle_{qid}_{s_id}"))
                 if len(row) == 2:
                     buttons.append(row)
                     row = []
-        if row: buttons.append(row)
+        if row:
+            buttons.append(row)
         if action == "admin_add":
             buttons.append([InlineKeyboardButton(text="🚀 ДОБАВИТЬ", callback_data="admin_confirm_add")])
         else:
@@ -144,31 +162,32 @@ def get_selection_keyboard(user_id):
     for s_id, name, active in students:
         prefix = "⭐ " if s_id in priority_list else "🐌 " if s_id in late_list else ""
         check = "✅ " if s_id in temp_selected else ""
-        status_dot = "🟢" if active else "🔴"
+        status_dot = "🟢 " if active else "🔴 "
         row.append(InlineKeyboardButton(text=f"{check}{prefix}{status_dot} {name}", callback_data=f"toggle_{s_id}"))
         if len(row) == 2:
             buttons.append(row)
             row = []
-    if row: buttons.append(row)
+    if row:
+        buttons.append(row)
     buttons.append([InlineKeyboardButton(text="🚀 ПРИМЕНИТЬ", callback_data="confirm_selection")])
     buttons.append([InlineKeyboardButton(text="🧹 Сбросить выбор", callback_data="clear_current_list")])
     buttons.append([InlineKeyboardButton(text="🚫 Отмена", callback_data="cancel_selection")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @router.callback_query(F.data.startswith("sel_"))
-async def start_selection(callback: CallbackQuery):
+async def start_selection(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет прав! Знай свой место!", show_alert=True)
         return
     action = callback.data.replace("sel_", "")
     initial_selected = priority_list.copy() if action == "priority" else late_list.copy() if action == "late" else []
-    user_selections[callback.from_user.id] = {"action": action, "selected": initial_selected}
+    user_selections[callback.from_user.id] = {"action": action, "selected": initial_selected, "timestamp": time.time()}
     titles = {"priority": "⭐ Приоритеты", "late": "🐌 Опоздания", "enable": "✅ Включение", "disable": "❌ Исключение"}
     await callback.message.answer(titles[action], reply_markup=get_selection_keyboard(callback.from_user.id))
     await callback.answer()
 
 @router.callback_query(F.data.startswith("admin_swap_start"))
-async def start_swap_ui(callback: CallbackQuery):
+async def start_swap_ui(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет прав! Знай свой место!", show_alert=True)
         return
@@ -186,12 +205,12 @@ async def start_swap_ui(callback: CallbackQuery):
             await callback.answer("⚠️ Очередь пуста!", show_alert=True)
             return
         qid = recent[0][0]
-    user_selections[callback.from_user.id] = {"action": "swap", "selected": [], "queue_id": qid}
+    user_selections[callback.from_user.id] = {"action": "swap", "selected": [], "queue_id": qid, "timestamp": time.time()}
     await callback.message.answer("🔀 Выбери двух человек:", reply_markup=get_selection_keyboard(callback.from_user.id))
     await callback.answer()
 
 @router.callback_query(lambda c: re.match(r"^admin_del_\d+$", getattr(c, "data", "") or ""))
-async def admin_delete_student_start(callback: CallbackQuery):
+async def admin_delete_student_start(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет прав! Знай свой место!", show_alert=True)
         return
@@ -201,19 +220,20 @@ async def admin_delete_student_start(callback: CallbackQuery):
     if not q:
         await callback.answer("⚠️ Очередь не найдена", show_alert=True)
         return
-    user_selections[callback.from_user.id] = {"action": "admin_del", "selected": [], "queue_id": qid}
+    user_selections[callback.from_user.id] = {"action": "admin_del", "selected": [], "queue_id": qid, "timestamp": time.time()}
     await callback.message.answer(f"Выбери позиции для удаления из очереди {qid}:", reply_markup=get_selection_keyboard(callback.from_user.id))
     await callback.answer()
 
 @router.callback_query(F.data.startswith("admin_del_confirm_"))
-async def admin_delete_confirm(callback: CallbackQuery):
+async def admin_delete_confirm(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет прав! Знай свой место!", show_alert=True)
         return
     rest = callback.data[len("admin_del_confirm_"):]
     try:
         qid_s, pos_s = rest.split("_")
-        qid = int(qid_s); pos = int(pos_s)
+        qid = int(qid_s)
+        pos = int(pos_s)
     except Exception as e:
         logging.error(f"Data split error: {e}")
         await callback.answer("⚠️ Неверные данные", show_alert=True)
@@ -228,7 +248,7 @@ async def admin_delete_confirm(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(lambda c: re.match(r"^admin_add_\d+$", getattr(c, "data", "") or ""))
-async def admin_add_student_start(callback: CallbackQuery):
+async def admin_add_student_start(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет прав! Знай свой место!", show_alert=True)
         return
@@ -238,19 +258,20 @@ async def admin_add_student_start(callback: CallbackQuery):
     if not q:
         await callback.answer("⚠️ Очередь не найдена", show_alert=True)
         return
-    user_selections[callback.from_user.id] = {"action": "admin_add", "selected": [], "queue_id": qid}
+    user_selections[callback.from_user.id] = {"action": "admin_add", "selected": [], "queue_id": qid, "timestamp": time.time()}
     await callback.message.answer(f"Выбери студентов для добавления в очереди {qid}:", reply_markup=get_selection_keyboard(callback.from_user.id))
     await callback.answer()
 
 @router.callback_query(F.data.startswith("admin_add_confirm_"))
-async def admin_add_confirm(callback: CallbackQuery):
+async def admin_add_confirm(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет прав! Знай свой место!", show_alert=True)
         return
     rest = callback.data[len("admin_add_confirm_"):]
     try:
         qid_s, sid_s = rest.split("_")
-        qid = int(qid_s); sid = int(sid_s)
+        qid = int(qid_s)
+        sid = int(sid_s)
     except Exception as e:
         logging.error(f"Data parse error: {e}")
         await callback.answer("⚠️ Неверные данные", show_alert=True)
@@ -265,7 +286,7 @@ async def admin_add_confirm(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data.startswith("admin_add_toggle_"))
-async def admin_add_toggle(callback: CallbackQuery):
+async def admin_add_toggle(callback: CallbackQuery) -> None:
     u_id = callback.from_user.id
     if u_id not in user_selections or user_selections[u_id].get("action") != "admin_add":
         return
@@ -285,7 +306,7 @@ async def admin_add_toggle(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data.startswith("admin_del_toggle_"))
-async def admin_del_toggle(callback: CallbackQuery):
+async def admin_del_toggle(callback: CallbackQuery) -> None:
     u_id = callback.from_user.id
     if u_id not in user_selections or user_selections[u_id].get("action") != "admin_del":
         return
@@ -305,7 +326,7 @@ async def admin_del_toggle(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data == "admin_confirm_add")
-async def admin_confirm_add(callback: CallbackQuery):
+async def admin_confirm_add(callback: CallbackQuery) -> None:
     u_id = callback.from_user.id
     if u_id not in user_selections or user_selections[u_id].get("action") != "admin_add":
         await callback.answer("⚠️ Ничего не выбрано", show_alert=True)
@@ -345,7 +366,7 @@ async def admin_confirm_add(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data == "admin_confirm_del")
-async def admin_confirm_del(callback: CallbackQuery):
+async def admin_confirm_del(callback: CallbackQuery) -> None:
     u_id = callback.from_user.id
     if u_id not in user_selections or user_selections[u_id].get("action") != "admin_del":
         await callback.answer("⚠️ Ничего не выбрано", show_alert=True)
@@ -362,7 +383,8 @@ async def admin_confirm_del(callback: CallbackQuery):
     for sid in sids:
         q_now = get_queue(qid)
         cur_item = next((it for it in q_now["items"] if it[1] == sid), None)
-        if not cur_item: continue
+        if not cur_item:
+            continue
         cur_pos = cur_item[0]
         try:
             deleted_sid = delete_student_from_queue_and_apply_penalty(qid, cur_pos, defer_log=True)
@@ -390,7 +412,7 @@ async def admin_confirm_del(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data == "open_latest_queue")
-async def open_latest(callback: CallbackQuery):
+async def open_latest(callback: CallbackQuery) -> None:
     recent = get_recent_queues(1)
     if not recent:
         await callback.answer("⚠️ Нет сохранённых очередей!", show_alert=True)
@@ -406,7 +428,7 @@ async def open_latest(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data == "pub_queues")
-async def show_queues_list(callback: CallbackQuery):
+async def show_queues_list(callback: CallbackQuery) -> None:
     qlist = get_recent_queues()
     if not qlist:
         await callback.answer("⚠️ Нет сохранённых очередей!", show_alert=True)
@@ -422,7 +444,7 @@ async def show_queues_list(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data.startswith("open_queue_"))
-async def open_queue(callback: CallbackQuery):
+async def open_queue(callback: CallbackQuery) -> None:
     try:
         qid = int(callback.data.replace("open_queue_", ""))
     except Exception as e:
@@ -439,7 +461,7 @@ async def open_queue(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data == "pub_list")
-async def pub_list(callback: CallbackQuery):
+async def pub_list(callback: CallbackQuery) -> None:
     students = get_full_list()
     text = "📝 <b>Список:</b>\n\n"
     for s_id, name, active in students:
@@ -448,7 +470,7 @@ async def pub_list(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data == "pub_weights")
-async def pub_weights(callback: CallbackQuery):
+async def pub_weights(callback: CallbackQuery) -> None:
     students = get_all_weights()
     text = "📊 <b>Веса:</b>\n\n"
     for name, weight in students:
@@ -457,7 +479,7 @@ async def pub_weights(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data == "pub_weight_history")
-async def pub_weight_history(callback: CallbackQuery):
+async def pub_weight_history(callback: CallbackQuery) -> None:
     students = get_full_list()
     buttons = []
     row = []
@@ -466,13 +488,14 @@ async def pub_weight_history(callback: CallbackQuery):
         if len(row) == 2:
             buttons.append(row)
             row = []
-    if row: buttons.append(row)
+    if row:
+        buttons.append(row)
     buttons.append([InlineKeyboardButton(text="🚫 Отмена", callback_data="cancel_selection")])
     await callback.message.answer("Выбери студента для просмотра истории весов:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 @router.callback_query(F.data.startswith("hist_weights_select_"))
-async def show_weight_history(callback: CallbackQuery):
+async def show_weight_history(callback: CallbackQuery) -> None:
     try:
         sid = int(callback.data.replace("hist_weights_select_", ""))
     except Exception as e:
@@ -501,7 +524,7 @@ async def show_weight_history(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data == "cancel_selection")
-async def cancel_selection_handler(callback: CallbackQuery):
+async def cancel_selection_handler(callback: CallbackQuery) -> None:
     user_selections.pop(callback.from_user.id, None)
     try:
         await callback.message.delete()
@@ -514,7 +537,7 @@ async def cancel_selection_handler(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data == "clear_current_list")
-async def clear_selection_handler(callback: CallbackQuery):
+async def clear_selection_handler(callback: CallbackQuery) -> None:
     u_id = callback.from_user.id
     if u_id in user_selections:
         user_selections[u_id]["selected"] = []
@@ -525,7 +548,7 @@ async def clear_selection_handler(callback: CallbackQuery):
         await callback.answer("Выбор очищен")
 
 @router.callback_query(F.data.startswith("swap_toggle_"))
-async def toggle_swap_item(callback: CallbackQuery):
+async def toggle_swap_item(callback: CallbackQuery) -> None:
     u_id = callback.from_user.id
     if u_id not in user_selections or user_selections[u_id]["action"] != "swap":
         return
@@ -559,7 +582,7 @@ async def toggle_swap_item(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data == "confirm_swap")
-async def confirm_swap_ui(callback: CallbackQuery):
+async def confirm_swap_ui(callback: CallbackQuery) -> None:
     u_id = callback.from_user.id
     if u_id not in user_selections or len(user_selections[u_id]["selected"]) != 2:
         await callback.answer("⚠️ Выбери двоих!", show_alert=True)
@@ -586,17 +609,20 @@ async def confirm_swap_ui(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data.startswith("toggle_"))
-async def toggle_student(callback: CallbackQuery):
+async def toggle_student(callback: CallbackQuery) -> None:
     u_id = callback.from_user.id
-    if u_id not in user_selections: return
+    if u_id not in user_selections:
+        return
     try:
         s_id = int(callback.data.replace("toggle_", ""))
     except Exception as e:
         logging.error(f"Toggle student parse error: {e}")
         return
     selected = user_selections[u_id]["selected"]
-    if s_id in selected: selected.remove(s_id)
-    else: selected.append(s_id)
+    if s_id in selected:
+        selected.remove(s_id)
+    else:
+        selected.append(s_id)
     try:
         await callback.message.edit_reply_markup(reply_markup=get_selection_keyboard(u_id))
     except Exception as e:
@@ -604,17 +630,22 @@ async def toggle_student(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data == "confirm_selection")
-async def confirm_selection(callback: CallbackQuery):
+async def confirm_selection(callback: CallbackQuery) -> None:
     global priority_list, late_list
     u_id = callback.from_user.id
-    if u_id not in user_selections: return
+    if u_id not in user_selections:
+        return
     action, ids = user_selections[u_id]["action"], user_selections[u_id]["selected"]
-    if action == "priority": priority_list = ids.copy()
-    elif action == "late": late_list = ids.copy()
+    if action == "priority":
+        priority_list = ids.copy()
+    elif action == "late":
+        late_list = ids.copy()
     elif action == "enable":
-        for s_id in ids: toggle_student_status(s_id, 1)
+        for s_id in ids:
+            toggle_student_status(s_id, 1)
     elif action == "disable":
-        for s_id in ids: toggle_student_status(s_id, 0)
+        for s_id in ids:
+            toggle_student_status(s_id, 0)
     user_selections.pop(u_id, None)
     try:
         await callback.message.edit_text("✅ Изменения применены", reply_markup=get_keyboard(u_id))
@@ -623,14 +654,14 @@ async def confirm_selection(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data.startswith("admin_"))
-async def handle_admin_btn(callback: CallbackQuery):
+async def handle_admin_btn(callback: CallbackQuery) -> None:
     u_id = callback.from_user.id
     if not is_admin(u_id):
         await callback.answer("⛔ Нет прав! Знай свой место!", show_alert=True)
         return
     if callback.data == "admin_gen":
         await callback.message.answer("Введи название предмета для новой очереди (например, \"Физика\"):")
-        user_selections[u_id] = {"action": "await_subject_for_gen", "selected": None}
+        user_selections[u_id] = {"action": "await_subject_for_gen", "selected": None, "timestamp": time.time()}
         await callback.answer()
         return
     elif callback.data == "admin_enable_all":
@@ -639,7 +670,7 @@ async def handle_admin_btn(callback: CallbackQuery):
     await callback.answer()
 
 @router.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message) -> None:
     await message.answer(
         "🤖 qq чат! Я бот, который позволит вам знать своё место\n\n"
         "В моем алгоритме используется система весов, чтобы очередь была честной:\n"
@@ -651,7 +682,7 @@ async def cmd_start(message: Message):
     )
 
 @router.message(Command("help"))
-async def cmd_help(message: Message):
+async def cmd_help(message: Message) -> None:
     user_id = message.from_user.id
     if is_admin(user_id):
         text = (
@@ -662,7 +693,7 @@ async def cmd_help(message: Message):
             "🐌 <b>Опоздания</b> — выделить студентов, которые должны быть внизу очереди.\n"
             "❌ <b>Исключить</b> — временно убрать человека из ротации (статус выключен).\n"
             "✅ <b>Включить</b> — вернуть человека в ротацию.\n"
-            "🔄 <b>Включить всех</b> — быстро восстановить всех студентов в ротации.\n\n"
+            "🔄 <b>Включить всех</b> — быстро восстановить всех студентов в ротацию.\n\n"
             "🧩 <b>Админские действия над очередью (появляются при просмотре конкретной очереди):</b>\n"
             "➕ <b>Добавить студента</b> — добавить выбранного студента в текущую очередь.\n"
             "➖ <b>Удалить студента</b> — удалить выбранного студента из текущей очереди.\n\n"
@@ -685,9 +716,10 @@ async def cmd_help(message: Message):
     await message.answer(text, parse_mode="HTML", reply_markup=get_keyboard(user_id))
 
 @router.message()
-async def generic_text_handler(message: Message):
+async def generic_text_handler(message: Message) -> None:
     u_id = message.from_user.id
     sel = user_selections.get(u_id)
+    cleanup_old_selections()
     if sel and sel.get("action") == "await_subject_for_gen":
         subject = message.text.strip()
         try:
@@ -714,15 +746,22 @@ async def generic_text_handler(message: Message):
     return
 
 @router.message(Command("swap"))
-async def cmd_swap_text(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id): return
+async def cmd_swap_text(message: Message, command: CommandObject) -> None:
+    if not is_admin(message.from_user.id):
+        return
     recent = get_recent_queues(1)
-    if not recent: return await message.answer("Очередь пуста")
+    if not recent:
+        await message.answer("Очередь пуста")
+        return
     qid = recent[0][0]
     current_q = get_queue(qid)
-    if not current_q: return await message.answer("Очередь пуста")
+    if not current_q:
+        await message.answer("Очередь пуста")
+        return
     args = (command.args or "").split()
-    if len(args) != 2: return await message.answer("Использование: /swap 1 5")
+    if len(args) != 2:
+        await message.answer("Использование: /swap 1 5")
+        return
     try:
         p1, p2 = map(int, args)
         positions = [itm[0] for itm in current_q["items"]]
@@ -745,7 +784,7 @@ async def cmd_swap_text(message: Message, command: CommandObject):
     await message.answer(f"🔄 Очередь обновлена", reply_markup=get_keyboard(message.from_user.id))
 
 @router.message(Command("reset"))
-async def cmd_reset(message: Message):
+async def cmd_reset(message: Message) -> None:
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Нет прав! Знай свой место!")
         return
